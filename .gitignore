@@ -2,3 +2,5 @@
 nicegui-pipe-analyzer.py
 pipe2.png
 streamlit-requirements.txt
+app_login/*
+.streamlit/*

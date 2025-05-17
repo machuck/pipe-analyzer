@@ -22,9 +22,29 @@ parser.add_argument("--dotenv-file", default=dotenv_file_name,
 args, _ = parser.parse_known_args()
 
 # Load environment variables from .env file
-load_dotenv(args.dotenv_file)
+try:
+    load_dotenv(args.dotenv_file)
+    API_KEY = os.getenv("OPENAI_API_KEY")
+except:
+    print("api key not in env file")
 
-API_KEY = os.getenv("OPENAI_API_KEY")
+def get_api_key():
+    # First try Streamlit's secrets manager (for deployed app)
+    if "openai" in st.secrets:
+        return st.secrets["openai"]["api_key"]
+    # Then try direct secret (alternative format)
+    elif "OPENAI_API_KEY" in st.secrets:
+        return st.secrets["OPENAI_API_KEY"]
+    # Finally fall back to environment variable (for local dev)
+    else:
+        api_key = os.getenv("OPENAI_API_KEY")
+        if not api_key:
+            st.warning("OPENAI_API_KEY not found in environment variables or secrets")
+        return api_key
+
+# Get the API key
+API_KEY = get_api_key()
+
 if not API_KEY:
     st.warning("OPENAI_API_KEY not found in environment variables")
 

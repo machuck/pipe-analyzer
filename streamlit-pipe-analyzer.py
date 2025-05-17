@@ -16,7 +16,7 @@ import matplotlib.pyplot as plt
 # ----- CONFIGURATION -----
 # Setup command-line arguments
 parser = argparse.ArgumentParser(description="Pipe Segment Analyzer App")
-dotenv_file_name="../Zehnder/POC_demo/Streamlit-Chatbot/app/.streamlit/secrets.toml" 
+dotenv_file_name=".streamlit/secrets.toml" 
 parser.add_argument("--dotenv-file", default=dotenv_file_name,
                     help="Path to .env file")
 args, _ = parser.parse_known_args()

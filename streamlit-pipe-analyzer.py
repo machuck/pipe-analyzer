@@ -21,6 +21,7 @@ parser.add_argument("--dotenv-file", default=dotenv_file_name,
                     help="Path to .env file")
 args, _ = parser.parse_known_args()
 
+API_KEY=None
 # Load environment variables from .env file
 try:
     load_dotenv(args.dotenv_file)
@@ -28,7 +29,7 @@ try:
 except:
     print("api key not in env file")
 
-def get_api_key():
+def get_openai_api_key():
     # First try Streamlit's secrets manager (for deployed app)
     if "openai" in st.secrets:
         return st.secrets["openai"]["api_key"]
@@ -43,7 +44,8 @@ def get_api_key():
         return api_key
 
 # Get the API key
-API_KEY = get_api_key()
+if not API_KEY:
+    API_KEY = get_openai_api_key()
 
 if not API_KEY:
     st.warning("OPENAI_API_KEY not found in environment variables")
@@ -57,25 +59,234 @@ def encode_image(image_file):
     """Encode an image file to base64"""
     return base64.b64encode(image_file.getvalue()).decode("utf-8")
 
-def extract_pipe_segments(image_file, model=DEFAULT_MODEL):
+def extract_pipe_segments(image_file, model="gpt-4o"):
+    """Extract pipe segments from image using AI vision"""
+    st.write("Starting extraction function...")  # Visible debug point
+
+    # Add visible timers in UI
+    start_time = datetime.now()
+    st.write(f"Started at: {start_time.strftime('%H:%M:%S.%f')}")
+
+    try:
+        # 1. Debug API key access
+        api_key = get_openai_api_key()
+        if not api_key:
+            st.error("❌ API key not found!")
+            return []
+
+        # Show first/last few chars of API key for verification
+        masked_key = f"{api_key[:5]}...{api_key[-4:]}" if len(api_key) > 10 else "Invalid key format"
+        st.write(f"Using API key (masked): {masked_key}")
+
+        # 2. Debug image encoding
+        try:
+            img_b64 = encode_image(image_file)
+            img_size_kb = len(img_b64) // 1000
+            st.write(f"Image encoded successfully: {img_size_kb}KB")
+
+            # Force terminal output with flush
+            print(f"\n[DEBUG] Image encoded: {img_size_kb}KB", flush=True)
+        except Exception as img_err:
+            st.error(f"❌ Image encoding failed: {str(img_err)}")
+            return []
+
+        # 3. Initialize OpenAI client with explicit debugging
+        st.write("Initializing OpenAI client...")
+        print("[DEBUG] Initializing OpenAI client with API key", flush=True)
+        try:
+            client = OpenAI(api_key=api_key)
+            st.write("✅ OpenAI client initialized")
+        except Exception as client_err:
+            st.error(f"❌ OpenAI client initialization failed: {str(client_err)}")
+            return []
+
+        # 4. Debug before API call
+        st.write(f"Preparing to call OpenAI {model}...")
+        print(f"[DEBUG] About to call OpenAI API with model: {model}", flush=True)
+        print(f"[DEBUG] Timestamp before API call: {datetime.now()}", flush=True)
+
+        # 5. Make the API call with try/except
+        api_call_start = datetime.now()
+        try:
+            # API call with improved prompt and example
+            resp = client.chat.completions.create(
+                model=model,
+                messages=[
+                    {"role": "system", "content":
+                        """You are a specialized vision model for extracting pipe segment data from engineering drawings.
+                           Extract pipe segments highlighted in pink/magenta/red. 
+                           Return data in EXACT format shown in the example."""
+                    },
+                    {"role": "user", "content": [
+                        {"type": "text", "text":
+                            "Extract ALL pipe segments from this engineering drawing. Focus on colored lines that represent pipes. "
+                            "For EACH segment, return a JSON object with these EXACT fields:\n"
+                            "- 'id': Use manhole/node IDs (like 'MH 8-155A')\n"
+                            "- 'start_node': Name or ID of starting point\n"
+                            "- 'end_node': Name or ID of ending point\n"
+                            "- 'coords': Array of [x,y] coordinates tracing the pipe path\n"
+                            "- 'pipe_type': Diameter and material (e.g. '8\" PVC')\n"
+                            "- 'length_ft': Numeric length in feet (without 'L.F.' or other text)\n"
+                            "- 'confidence': Number between 0-1 indicating extraction confidence\n\n"
+                            "EXAMPLE OUTPUT FORMAT:\n"
+                            "[\n"
+                            "  {\n"
+                            "    \"id\": \"MH 8-161\",\n"
+                            "    \"start_node\": \"MH 8-161\",\n"
+                            "    \"end_node\": \"MH 8-162\",\n"
+                            "    \"coords\": [[100, 100], [150, 150], [200, 200]],\n"
+                            "    \"pipe_type\": \"8\\\" PVC\",\n"
+                            "    \"length_ft\": 170.0,\n"
+                            "    \"confidence\": 0.95\n"
+                            "  }\n"
+                            "]\n\n"
+                            "Return ONLY a JSON array with no explanations. Use the exact field names shown."
+                        },
+                        {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}}
+                    ]}
+                ]
+            )
+
+            api_call_end = datetime.now()
+            api_duration = (api_call_end - api_call_start).total_seconds()
+
+            # Debug after successful API call
+            st.write(f"✅ OpenAI API responded in {api_duration:.2f} seconds")
+            print(f"[DEBUG] OpenAI API responded in {api_duration:.2f} seconds", flush=True)
+
+            # 6. Process the response with detailed debugging
+            content = resp.choices[0].message.content
+            print(f"\n[DEBUG] API Response Content:\n{content}\n", flush=True)
+
+            # Show raw response in UI
+            st.subheader("OpenAI Raw Response:")
+            st.code(content)
+            
+            # Parse JSON from response
+            try:
+                # Try to find JSON within the response
+                json_start = content.find("[")
+                json_end = content.rfind("]") + 1
+                
+                if json_start == -1 or json_end == 0:
+                    st.warning("Model didn't return proper JSON. Using fallback data...")
+                    # Use fallback data for demonstration purposes
+                    segments = [
+                        {
+                            "id": "MH 8-155A",
+                            "start_node": "PINEY POINT DR NW",
+                            "end_node": "MH 8-165",
+                            "coords": [[200, 100], [220, 120], [240, 140]],
+                            "pipe_type": "8\" PVC",
+                            "length_ft": 226.0,
+                            "confidence": 0.94
+                        },
+                        {
+                            "id": "MH 8-165",
+                            "start_node": "MH 8-155A",
+                            "end_node": "MH 8-164",
+                            "coords": [[240, 140], [260, 160], [280, 180]],
+                            "pipe_type": "8\" PVC",
+                            "length_ft": 210.0,
+                            "confidence": 0.92
+                        }
+                    ]
+                else:
+                    json_str = content[json_start:json_end]
+                    segments = json.loads(json_str)
+                    st.success(f"Successfully extracted {len(segments)} pipe segments")
+            except json.JSONDecodeError as e:
+                st.warning(f"JSON parsing error: {e}. Using fallback data...")
+                # Fallback data (shortened version)
+                segments = [
+                    {
+                        "id": "MH 8-155A",
+                        "start_node": "PINEY POINT DR NW",
+                        "end_node": "MH 8-165",
+                        "coords": [[200, 100], [220, 120], [240, 140]],
+                        "pipe_type": "8\" PVC", 
+                        "length_ft": 226.0,
+                        "confidence": 0.94
+                    },
+                    {
+                        "id": "MH 8-165", 
+                        "start_node": "MH 8-155A",
+                        "end_node": "MH 8-164",
+                        "coords": [[240, 140], [260, 160], [280, 180]],
+                        "pipe_type": "8\" PVC",
+                        "length_ft": 210.0,
+                        "confidence": 0.92
+                    }
+                ]
+
+            # End timing
+            end_time = datetime.now()
+            total_duration = (end_time - start_time).total_seconds()
+            st.write(f"Total processing time: {total_duration:.2f} seconds")
+            
+            # Return the segments list
+            return segments
+
+        except Exception as api_err:
+            api_duration = (datetime.now() - api_call_start).total_seconds()
+            error_msg = str(api_err)
+
+            # Comprehensive error display
+            st.error(f"❌ OpenAI API call failed after {api_duration:.2f} seconds")
+            st.error(f"Error details: {error_msg}")
+            print(f"[DEBUG] API ERROR: {error_msg}", flush=True)
+
+            # Try to get more error details
+            if hasattr(api_err, 'response'):
+                try:
+                    err_detail = api_err.response.json()
+                    st.json(err_detail)
+                    print(f"[DEBUG] Error response: {err_detail}", flush=True)
+                except:
+                    pass
+
+            return []
+
+    except Exception as e:
+        st.error(f"Unexpected error: {str(e)}")
+        import traceback
+        st.code(traceback.format_exc())
+        print(traceback.format_exc(), flush=True)
+        return []
+
+def extract_pipe_segments_old(image_file, model="gpt-4o"):
     """Extract pipe segments from image using AI vision"""
     with st.spinner("Analyzing image with AI..."):
         try:
-            # Encode image to base64
+            # Get API key
+            api_key = get_openai_api_key()
+            if not api_key:
+                st.error("Cannot proceed without OpenAI API key")
+                return []
+
+            # Initialize client
+            client = OpenAI(api_key=api_key)
+
+            # Encode image
             img_b64 = encode_image(image_file)
-            
-            # Initialize OpenAI client
-            client = OpenAI(api_key=API_KEY)
-            
-            # Call the AI model
+
+            # Show progress indicator
             st.info(f"Analyzing image with {model}...")
-            
+
+            # Add debug container to show raw response
+            debug_container = st.empty()
+
+            # API call with detailed logging
+            print("\n\n===== SENDING REQUEST TO OPENAI =====")
+            print(f"Model: {model}")
+            print(f"Image size: {len(img_b64)//1000}KB encoded")
+
             resp = client.chat.completions.create(
                 model=model,
                 messages=[
                     {"role": "system", "content": "You are a specialized vision model for extracting pipe segment data from engineering drawings and maps. You analyze images and identify highlighted pipe segments, extracting their properties and returning them only as structured JSON data without explanations."},
                     {"role": "user", "content": [
-                        {"type": "text", "text": 
+                        {"type": "text", "text":
                             "Extract all pipe segments highlighted in pink/magenta/red. "
                             "I need you to directly extract this data without explanations. "
                             "Return ONLY a JSON array of objects with fields: "
@@ -92,7 +303,18 @@ def extract_pipe_segments(image_file, model=DEFAULT_MODEL):
                     ]}
                 ]
             )
-            
+
+            # Print full API response for debugging
+            print("\n===== RECEIVED RESPONSE FROM OPENAI =====")
+            print(resp)
+            print("\n===== CONTENT FROM OPENAI =====")
+            content = resp.choices[0].message.content
+            print(content)
+
+            # Show raw response in UI for debugging
+            with st.expander("Debug: Raw API Response"):
+                st.code(content, language="json")
+
             st.success("AI analysis complete")
             
             # Extract JSON portion from the response
@@ -373,7 +595,7 @@ def main():
     st.set_page_config(page_title="Pipe Segment Analyzer", layout="wide")
     
     # Initialize session state for storing data between reruns
-    if 'segments' not in st.session_state:
+    if 'segments' not in st.session_state or st.session_state.segments is None:
         st.session_state.segments = []
     if 'edited_segments' not in st.session_state:
         st.session_state.edited_segments = {}
@@ -404,7 +626,7 @@ def main():
             st.session_state.image = uploaded_file
             
             # Display the image
-            st.image(uploaded_file, caption="Uploaded Image", use_column_width=True)
+            st.image(uploaded_file, caption="Uploaded Image", use_container_width=True)
             
             # Model selection
             model = st.selectbox(
@@ -416,7 +638,12 @@ def main():
             # Process button
             if st.button("Process Image", key="process_button"):
                 # Extract segments
-                st.session_state.segments = extract_pipe_segments(uploaded_file, model)
+                extracted_segments = extract_pipe_segments(uploaded_file, model)
+                # Safety check
+                if extracted_segments is None:
+                    extracted_segments = []
+                
+                st.session_state.segments = extracted_segments
                 st.session_state.edited_segments = {}
                 st.session_state.highlighted_segment = None
                 st.session_state.processing_done = True
@@ -483,6 +710,10 @@ def main():
     
     # Main content area - use two columns
     if st.session_state.processing_done:
+        # Safety check
+        if st.session_state.segments is None:
+            st.session_state.segments = []
+            
         # Summary statistics
         col1, col2, col3, col4 = st.columns(4)
         
@@ -516,7 +747,7 @@ def main():
                 )
                 
                 # Display visualization
-                st.image(vis_img, caption="Pipe Segment Visualization", use_column_width=True)
+                st.image(vis_img, caption="Pipe Segment Visualization", use_container_width=True)
                 
                 # Segment selection for highlighting
                 segment_options = ["None"] + [seg.get("id", f"Segment {i+1}") for i, seg in enumerate(st.session_state.segments)]
@@ -553,72 +784,76 @@ def main():
             st.markdown("### Segment Data")
             
             # Convert segments to DataFrame for display
-            df = pd.DataFrame([{k: v for k, v in seg.items() if k != 'coords'} for seg in st.session_state.segments])
-            
-            # Add a formatted confidence column
-            if 'confidence' in df.columns:
-                df['confidence_pct'] = df['confidence'].apply(lambda x: f"{x*100:.0f}%")
-            
-            # Mark human-edited rows
-            df['human_edited'] = df.index.map(lambda i: i in st.session_state.edited_segments)
-            
-            # Show the table
-            st.dataframe(
-                df.style.apply(
-                    lambda row: ['background-color: #d4edda' if row['human_edited'] else '' for _ in row], 
-                    axis=1
-                ),
-                column_config={
-                    "human_edited": st.column_config.CheckboxColumn("Human Edited", help="Segments edited by humans")
-                },
-                hide_index=True,
-                use_container_width=True
-            )
-            
-            # Separate section for editing
-            st.markdown("### Edit Segments")
-            edit_segment_id = st.selectbox(
-                "Select Segment to Edit",
-                options=[f"{seg.get('id', f'Segment {i+1}')}" for i, seg in enumerate(st.session_state.segments)]
-            )
-            
-            # Find the index of the selected segment
-            edit_index = None
-            for i, seg in enumerate(st.session_state.segments):
-                if seg.get('id', f'Segment {i+1}') == edit_segment_id:
-                    edit_index = i
-                    break
+            if len(st.session_state.segments) > 0:
+                df = pd.DataFrame([{k: v for k, v in seg.items() if k != 'coords'} 
+                                  for seg in st.session_state.segments])
+                
+                # Add a formatted confidence column
+                if 'confidence' in df.columns:
+                    df['confidence_pct'] = df['confidence'].apply(lambda x: f"{x*100:.0f}%")
+                
+                # Mark human-edited rows
+                df['human_edited'] = df.index.map(lambda i: i in st.session_state.edited_segments)
+                
+                # Show the table
+                st.dataframe(
+                    df.style.apply(
+                        lambda row: ['background-color: #d4edda' if row['human_edited'] else '' for _ in row], 
+                        axis=1
+                    ),
+                    column_config={
+                        "human_edited": st.column_config.CheckboxColumn("Human Edited", help="Segments edited by humans")
+                    },
+                    hide_index=True,
+                    use_container_width=True
+                )
+                
+                # Separate section for editing
+                st.markdown("### Edit Segments")
+                edit_segment_id = st.selectbox(
+                    "Select Segment to Edit",
+                    options=[f"{seg.get('id', f'Segment {i+1}')}" for i, seg in enumerate(st.session_state.segments)]
+                )
+                
+                # Find the index of the selected segment
+                edit_index = None
+                for i, seg in enumerate(st.session_state.segments):
+                    if seg.get('id', f'Segment {i+1}') == edit_segment_id:
+                        edit_index = i
+                        break
+                        
+                if edit_index is not None:
+                    segment = st.session_state.segments[edit_index]
                     
-            if edit_index is not None:
-                segment = st.session_state.segments[edit_index]
-                
-                # Create columns for form
-                col1, col2 = st.columns(2)
-                
-                with col1:
-                    new_id = st.text_input("ID", value=segment.get('id', f'Segment {edit_index+1}'))
-                    new_start_node = st.text_input("Start Node", value=segment.get('start_node', 'Unknown'))
-                    new_end_node = st.text_input("End Node", value=segment.get('end_node', 'Unknown'))
-                
-                with col2:
-                    new_pipe_type = st.text_input("Pipe Type", value=segment.get('pipe_type', 'Unknown'))
-                    new_length = st.number_input("Length (ft)", value=float(segment.get('length_ft', 0)), format="%.1f")
-                    new_confidence = st.slider("Confidence", min_value=0.0, max_value=1.0, value=float(segment.get('confidence', 0.8)), step=0.01)
-                
-                if st.button("Update Segment"):
-                    # Update the segment
-                    st.session_state.segments[edit_index]['id'] = new_id
-                    st.session_state.segments[edit_index]['start_node'] = new_start_node
-                    st.session_state.segments[edit_index]['end_node'] = new_end_node
-                    st.session_state.segments[edit_index]['pipe_type'] = new_pipe_type
-                    st.session_state.segments[edit_index]['length_ft'] = float(new_length)
-                    st.session_state.segments[edit_index]['confidence'] = float(new_confidence)
+                    # Create columns for form
+                    col1, col2 = st.columns(2)
                     
-                    # Mark as human-edited
-                    st.session_state.edited_segments[edit_index] = True
+                    with col1:
+                        new_id = st.text_input("ID", value=segment.get('id', f'Segment {edit_index+1}'))
+                        new_start_node = st.text_input("Start Node", value=segment.get('start_node', 'Unknown'))
+                        new_end_node = st.text_input("End Node", value=segment.get('end_node', 'Unknown'))
                     
-                    st.success(f"Updated segment {new_id}")
-                    st.rerun()
+                    with col2:
+                        new_pipe_type = st.text_input("Pipe Type", value=segment.get('pipe_type', 'Unknown'))
+                        new_length = st.number_input("Length (ft)", value=float(segment.get('length_ft', 0)), format="%.1f")
+                        new_confidence = st.slider("Confidence", min_value=0.0, max_value=1.0, value=float(segment.get('confidence', 0.8)), step=0.01)
+                    
+                    if st.button("Update Segment"):
+                        # Update the segment
+                        st.session_state.segments[edit_index]['id'] = new_id
+                        st.session_state.segments[edit_index]['start_node'] = new_start_node
+                        st.session_state.segments[edit_index]['end_node'] = new_end_node
+                        st.session_state.segments[edit_index]['pipe_type'] = new_pipe_type
+                        st.session_state.segments[edit_index]['length_ft'] = float(new_length)
+                        st.session_state.segments[edit_index]['confidence'] = float(new_confidence)
+                        
+                        # Mark as human-edited
+                        st.session_state.edited_segments[edit_index] = True
+                        
+                        st.success(f"Updated segment {new_id}")
+                        st.rerun()
+            else:
+                st.warning("No segments to display")
     
     else:
         # Show welcome message if no processing has been done
